@@ -102,6 +102,7 @@ enum uring_cmd_write_mode {
 	FIO_URING_CMD_WMODE_UNCOR,
 	FIO_URING_CMD_WMODE_ZEROES,
 	FIO_URING_CMD_WMODE_VERIFY,
+	FIO_URING_CMD_WMODE_ZONE_APPEND,
 };
 
 enum uring_cmd_verify_mode {
@@ -247,10 +248,10 @@ static struct fio_option options[] = {
 	},
 	{
 		.name	= "write_mode",
-		.lname	= "Additional Write commands support (Write Uncorrectable, Write Zeores)",
+		.lname	= "Additional Write commands support (Write Uncorrectable, Write Zeros, Zone Append)",
 		.type	= FIO_OPT_STR,
 		.off1	= offsetof(struct ioring_options, write_mode),
-		.help	= "Issue Write Uncorrectable or Zeroes command instead of Write command",
+		.help	= "Issue Write Uncorrectable, Write Zeroes, or Zone Append command instead of Write command",
 		.def	= "write",
 		.posval = {
 			  { .ival = "write",
@@ -268,6 +269,10 @@ static struct fio_option options[] = {
 			  { .ival = "verify",
 			    .oval = FIO_URING_CMD_WMODE_VERIFY,
 			    .help = "Issue Verify commands for write operations"
+			  },
+			  { .ival = "zone_append",
+			    .oval = FIO_URING_CMD_WMODE_ZONE_APPEND,
+			    .help = "Issue Zone Append commands for write operations"
 			  },
 		},
 		.category = FIO_OPT_C_ENGINE,
@@ -1449,6 +1454,9 @@ static int fio_ioring_cmd_init(struct thread_data *td, struct ioring_data *ld)
 		case FIO_URING_CMD_WMODE_VERIFY:
 			ld->write_opcode = nvme_cmd_verify;
 			break;
+		case FIO_URING_CMD_WMODE_ZONE_APPEND:
+			ld->write_opcode = nvme_zns_cmd_append;
+			break;
 		default:
 			ld->write_opcode = nvme_cmd_write;
 			break;
@@ -1481,6 +1489,13 @@ static int fio_ioring_init(struct thread_data *td)
 	if (o->registerfiles && td->o.nr_files != td->o.open_files) {
 		log_err("fio: io_uring registered files require nr_files to "
 			"be identical to open_files\n");
+		return 1;
+	}
+
+	if (o->write_mode == FIO_URING_CMD_WMODE_ZONE_APPEND
+		&& td->o.zone_mode != ZONE_MODE_ZBD) {
+		log_err("fio: io_uring_cmd with write_mode=zone_append "
+			"requires zonemode=zbd\n");
 		return 1;
 	}
 
@@ -1955,6 +1970,12 @@ static int fio_ioring_cmd_reset_wp(struct thread_data *td, struct fio_file *f,
 	return fio_nvme_reset_wp(td, f, offset, length);
 }
 
+static int fio_ioring_cmd_finish_zone(struct thread_data *td, struct fio_file *f,
+				      uint64_t offset, uint64_t length)
+{
+	return fio_nvme_finish_zone(td, f, offset, length);
+}
+
 static int fio_ioring_cmd_get_max_open_zones(struct thread_data *td,
 					     struct fio_file *f,
 					     unsigned int *max_open_zones)
@@ -2039,6 +2060,7 @@ static struct ioengine_ops ioengine_uring_cmd = {
 	.get_zoned_model	= fio_ioring_cmd_get_zoned_model,
 	.report_zones		= fio_ioring_cmd_report_zones,
 	.reset_wp		= fio_ioring_cmd_reset_wp,
+	.finish_zone		= fio_ioring_cmd_finish_zone,
 	.get_max_open_zones	= fio_ioring_cmd_get_max_open_zones,
 	.options		= options,
 	.option_struct_size	= sizeof(struct ioring_options),
